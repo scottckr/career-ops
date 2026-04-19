@@ -16,7 +16,9 @@
     "liveness": "node check-liveness.mjs",
     "scan": "node scan.mjs",
     "token:audit": "node token-audit.mjs",
-    "gemini:eval": "node gemini-eval.mjs"
+    "gemini:eval": "node gemini-eval.mjs",
+    "dashboard": "./dashboard/career-dashboard --path .",
+    "dashboard:build": "cd dashboard && go build -o career-dashboard ."
   },
   "keywords": [
     "ai",

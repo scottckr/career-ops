@@ -22,103 +22,87 @@ Leer `portals.yml` que contiene:
 - `search_queries`: Lista de queries WebSearch con `site:` filters por portal (descubrimiento amplio)
 - `tracked_companies`: Empresas específicas con `careers_url` para navegación directa
 - `title_filter`: Keywords positive/negative/seniority_boost para filtrado de títulos
+- `company_filter`: Empresas y keywords de empresa bloqueadas — aplicar a TODOS los resultados (API + WebSearch)
 
-## Estrategia de descubrimiento (3 niveles)
+## IMPORTANTE: Usar el script zero-token primero
 
-### Nivel 1 — Playwright directo (PRINCIPAL)
+`scan.mjs` es un script Node.js que hace las llamadas a APIs de Greenhouse, Ashby y Lever directamente — sin tokens de Claude. **Siempre ejecutarlo primero:**
 
-**Para cada empresa en `tracked_companies`:** Navegar a su `careers_url` con Playwright (`browser_navigate` + `browser_snapshot`), leer TODOS los job listings visibles, y extraer título + URL de cada uno. Este es el método más fiable porque:
-- Ve la página en tiempo real (no resultados cacheados de Google)
-- Funciona con SPAs (Ashby, Lever, Workday)
-- Detecta ofertas nuevas al instante
-- No depende de la indexación de Google
+```bash
+node scan.mjs
+```
 
-**Cada empresa DEBE tener `careers_url` en portals.yml.** Si no la tiene, buscarla una vez, guardarla, y usar en futuros scans.
+Este script cubre automáticamente TODAS las empresas en `tracked_companies` cuya `careers_url` tenga un patrón ATS reconocible:
+- URLs con `job-boards.greenhouse.io` o `boards.greenhouse.io` → Greenhouse API
+- URLs con `jobs.ashbyhq.com` → Ashby API
+- URLs con `jobs.lever.co` → Lever API
+- Empresas con campo `api:` explícito → usa esa URL directamente
 
-### Nivel 2 — ATS APIs / Feeds (COMPLEMENTARIO)
+El script aplica `title_filter`, deduplica contra `scan-history.tsv` + `pipeline.md` + `applications.md`, y escribe los resultados directamente. **No repetir estas llamadas a API con herramientas de IA.**
 
-Para empresas con API pública o feed estructurado, usar la respuesta JSON/XML como complemento rápido de Nivel 1. Es más rápido que Playwright y reduce errores de scraping visual.
+## REGLA ESTRICTA: No duplicar trabajo del script
 
-**Soporte actual (variables entre `{}`):**
-- **Greenhouse**: `https://boards-api.greenhouse.io/v1/boards/{company}/jobs`
-- **Ashby**: `https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams`
-- **BambooHR**: lista `https://{company}.bamboohr.com/careers/list`; detalle de una oferta `https://{company}.bamboohr.com/careers/{id}/detail`
-- **Lever**: `https://api.lever.co/v0/postings/{company}?mode=json`
-- **Teamtailor**: `https://{company}.teamtailor.com/jobs.rss`
-- **Workday**: `https://{company}.{shard}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs`
+**Después de `node scan.mjs`, el agente de IA NO debe ejecutar WebSearch para ninguna empresa que el script ya haya cubierto.** El script cubre automáticamente todas las empresas en `tracked_companies` con un patrón ATS reconocible (Greenhouse, Ashby, Lever). Hacer WebSearch sobre las mismas empresas duplica trabajo y gasta tokens innecesariamente.
 
-**Convención de parsing por provider:**
-- `greenhouse`: `jobs[]` → `title`, `absolute_url`
-- `ashby`: GraphQL `ApiJobBoardWithTeams` con `organizationHostedJobsPageName={company}` → `jobBoard.jobPostings[]` (`title`, `id`; construir URL pública si no viene en payload)
-- `bamboohr`: lista `result[]` → `jobOpeningName`, `id`; construir URL de detalle `https://{company}.bamboohr.com/careers/{id}/detail`; para leer el JD completo, hacer GET del detalle y usar `result.jobOpening` (`jobOpeningName`, `description`, `datePosted`, `minimumExperience`, `compensation`, `jobOpeningShareUrl`)
-- `lever`: array raíz `[]` → `text`, `hostedUrl` (fallback: `applyUrl`)
-- `teamtailor`: RSS items → `title`, `link`
-- `workday`: `jobPostings[]`/`jobPostings` (según tenant) → `title`, `externalPath` o URL construida desde el host
+**El agente de IA solo debe hacer WebSearch en estos dos casos:**
+1. Empresas en `tracked_companies` con `scan_method: websearch` explícito y `enabled: true`
+2. Las queries de descubrimiento definidas en `search_queries` con `enabled: true`
 
-### Nivel 3 — WebSearch queries (DESCUBRIMIENTO AMPLIO)
+Ningún otro WebSearch está permitido durante el scan.
 
-Los `search_queries` con `site:` filters cubren portales de forma transversal (todos los Ashby, todos los Greenhouse, etc.). Útil para descubrir empresas NUEVAS que aún no están en `tracked_companies`, pero los resultados pueden estar desfasados.
+## Estrategia de descubrimiento (lo que el script NO cubre)
 
-**Prioridad de ejecución:**
-1. Nivel 1: Playwright → todas las `tracked_companies` con `careers_url`
-2. Nivel 2: API → todas las `tracked_companies` con `api:`
-3. Nivel 3: WebSearch → todos los `search_queries` con `enabled: true`
+Después de `node scan.mjs`, el agente de IA solo necesita cubrir lo que el script no puede:
 
-Los niveles son aditivos — se ejecutan todos, los resultados se mezclan y deduplicar.
+### Nivel 1 — Empresas con `scan_method: websearch`
+
+Empresas en `tracked_companies` con `scan_method: websearch` no tienen un patrón ATS reconocible y son ignoradas por el script. Para cada una con `enabled: true`, ejecutar su `scan_query` con WebSearch y extraer título + URL + empresa de los resultados.
+
+### Nivel 2 — WebSearch queries (DESCUBRIMIENTO AMPLIO)
+
+Los `search_queries` con `site:` filters cubren portales de forma transversal. Útil para descubrir empresas NUEVAS que aún no están en `tracked_companies`, pero los resultados pueden estar desfasados.
 
 ## Workflow
 
-1. **Leer configuración**: `portals.yml`
-2. **Leer historial**: `data/scan-history.tsv` → URLs ya vistas
-3. **Leer dedup sources**: `data/applications.md` + `data/pipeline.md`
+1. **Ejecutar el scanner zero-token**: `node scan.mjs`
+   - Lee el output para saber cuántas empresas escaneó y qué encontró
+   - El script ya actualiza `pipeline.md` y `scan-history.tsv`
 
-4. **Nivel 1 — Playwright scan** (paralelo en batches de 3-5):
-   Para cada empresa en `tracked_companies` con `enabled: true` y `careers_url` definida:
-   a. `browser_navigate` a la `careers_url`
-   b. `browser_snapshot` para leer todos los job listings
-   c. Si la página tiene filtros/departamentos, navegar las secciones relevantes
-   d. Para cada job listing extraer: `{title, url, company}`
-   e. Si la página pagina resultados, navegar páginas adicionales
-   f. Acumular en lista de candidatos
-   g. Si `careers_url` falla (404, redirect), intentar `scan_query` como fallback y anotar para actualizar la URL
+2. **Leer configuración**: `portals.yml` → identificar empresas con `scan_method: websearch` y `enabled: true`
 
-5. **Nivel 2 — ATS APIs / feeds** (paralelo):
-   Para cada empresa en `tracked_companies` con `api:` definida y `enabled: true`:
-   a. WebFetch de la URL de API/feed
-   b. Si `api_provider` está definido, usar su parser; si no está definido, inferir por dominio (`boards-api.greenhouse.io`, `jobs.ashbyhq.com`, `api.lever.co`, `*.bamboohr.com`, `*.teamtailor.com`, `*.myworkdayjobs.com`)
-   c. Para **Ashby**, enviar POST con:
-      - `operationName: ApiJobBoardWithTeams`
-      - `variables.organizationHostedJobsPageName: {company}`
-      - query GraphQL de `jobBoardWithTeams` + `jobPostings { id title locationName employmentType compensationTierSummary }`
-   d. Para **BambooHR**, la lista solo trae metadatos básicos. Para cada item relevante, leer `id`, hacer GET a `https://{company}.bamboohr.com/careers/{id}/detail`, y extraer el JD completo desde `result.jobOpening`. Usar `jobOpeningShareUrl` como URL pública si viene; si no, usar la URL de detalle.
-   e. Para **Workday**, enviar POST JSON con al menos `{"appliedFacets":{},"limit":20,"offset":0,"searchText":""}` y paginar por `offset` hasta agotar resultados
-   f. Para cada job extraer y normalizar: `{title, url, company}`
-   g. Acumular en lista de candidatos (dedup con Nivel 1)
+3. **Leer historial actualizado**: `data/scan-history.tsv` → URLs ya vistas (incluye lo que acaba de añadir el script)
 
-6. **Nivel 3 — WebSearch queries** (paralelo si posible):
+4. **Leer dedup sources**: `data/applications.md` + `data/pipeline.md`
+
+5. **Nivel 1 — WebSearch para empresas con scan_method: websearch** (paralelo):
+   Para cada empresa con `scan_method: websearch` y `enabled: true`:
+   a. Ejecutar WebSearch con su `scan_query`
+   b. Extraer `{title, url, company}` de los resultados
+   c. Acumular en lista de candidatos
+
+6. **Nivel 2 — WebSearch queries** (paralelo si posible):
    Para cada query en `search_queries` con `enabled: true`:
    a. Ejecutar WebSearch con el `query` definido
    b. De cada resultado extraer: `{title, url, company}`
       - **title**: del título del resultado (antes del " @ " o " | ")
       - **url**: URL del resultado
       - **company**: después del " @ " en el título, o extraer del dominio/path
-   c. Acumular en lista de candidatos (dedup con Nivel 1+2)
+   c. Acumular en lista de candidatos (dedup con Nivel 1)
 
-6. **Filtrar por título** usando `title_filter` de `portals.yml`:
-   - Al menos 1 keyword de `positive` debe aparecer en el título (case-insensitive)
-   - 0 keywords de `negative` deben aparecer
-   - `seniority_boost` keywords dan prioridad pero no son obligatorios
+7. **Filtrar por título y empresa** usando `portals.yml`:
+   - **title_filter**: Al menos 1 keyword de `positive` debe aparecer en el título (case-insensitive); 0 de `negative`
+   - **company_filter**: Descartar si el nombre de empresa coincide exactamente con `blocked_names` O contiene algún keyword de `blocked_keywords` (case-insensitive). Registrar como `skipped_blocked`.
 
-7. **Deduplicar** contra 3 fuentes:
+8. **Deduplicar** contra 3 fuentes:
    - `scan-history.tsv` → URL exacta ya vista
    - `applications.md` → empresa + rol normalizado ya evaluado
    - `pipeline.md` → URL exacta ya en pendientes o procesadas
 
-7.5. **Verificar liveness de resultados de WebSearch (Nivel 3)** — ANTES de añadir a pipeline:
+8.5. **Verificar liveness de resultados de WebSearch** — ANTES de añadir a pipeline:
 
-   Los resultados de WebSearch pueden estar desactualizados (Google cachea resultados durante semanas o meses). Para evitar evaluar ofertas expiradas, verificar con Playwright cada URL nueva que provenga del Nivel 3. Los Niveles 1 y 2 son inherentemente en tiempo real y no requieren esta verificación.
+   Los resultados de WebSearch pueden estar desactualizados (Google cachea resultados durante semanas o meses). Para evitar evaluar ofertas expiradas, verificar con Playwright cada URL nueva que provenga de WebSearch. Los resultados del script `scan.mjs` son en tiempo real y no requieren verificación.
 
-   Para cada URL nueva de Nivel 3 (secuencial — NUNCA Playwright en paralelo):
+   Para cada URL nueva de WebSearch (secuencial — NUNCA Playwright en paralelo):
    a. `browser_navigate` a la URL
    b. `browser_snapshot` para leer el contenido
    c. Clasificar:
@@ -128,17 +112,18 @@ Los niveles son aditivos — se ejecutan todos, los resultados se mezclan y dedu
         - Página contiene: "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found"
         - Solo navbar y footer visibles, sin contenido JD (contenido < ~300 chars)
    d. Si expirada: registrar en `scan-history.tsv` con status `skipped_expired` y descartar
-   e. Si activa: continuar al paso 8
+   e. Si activa: continuar al paso 9
 
    **No interrumpir el scan entero si una URL falla.** Si `browser_navigate` da error (timeout, 403, etc.), marcar como `skipped_expired` y continuar con la siguiente.
 
-8. **Para cada oferta nueva verificada que pase filtros**:
+9. **Para cada oferta nueva verificada que pase filtros**:
    a. Añadir a `pipeline.md` sección "Pendientes": `- [ ] {url} | {company} | {title}`
    b. Registrar en `scan-history.tsv`: `{url}\t{date}\t{query_name}\t{title}\t{company}\tadded`
 
-9. **Ofertas filtradas por título**: registrar en `scan-history.tsv` con status `skipped_title`
-10. **Ofertas duplicadas**: registrar con status `skipped_dup`
-11. **Ofertas expiradas (Nivel 3)**: registrar con status `skipped_expired`
+10. **Ofertas filtradas por título**: registrar en `scan-history.tsv` con status `skipped_title`
+11. **Ofertas bloqueadas por empresa**: registrar con status `skipped_blocked`
+12. **Ofertas duplicadas**: registrar con status `skipped_dup`
+13. **Ofertas expiradas (WebSearch)**: registrar con status `skipped_expired`
 
 ## Extracción de título y empresa de WebSearch results
 
@@ -174,14 +159,15 @@ https://...	2026-02-10	WebSearch — AI PM	PM AI	ClosedCo	skipped_expired
 ```
 Portal Scan — {YYYY-MM-DD}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-Queries ejecutados: N
-Ofertas encontradas: N total
-Filtradas por título: N relevantes
-Duplicadas: N (ya evaluadas o en pipeline)
-Expiradas descartadas: N (links muertos, Nivel 3)
-Nuevas añadidas a pipeline.md: N
+Script (scan.mjs):   N empresas escaneadas, N nuevas añadidas
+WebSearch companies: N empresas con scan_method: websearch
+WebSearch queries:   N queries de descubrimiento
+Total revisadas:     N
+Duplicadas:          N (ya evaluadas o en pipeline)
+Expiradas:           N (links muertos — WebSearch)
+Nuevas añadidas a pipeline.md: N (script) + N (IA) = N total
 
-  + {company} | {title} | {query_name}
+  + {company} | {title} | {fuente}
   ...
 
 → Ejecuta /career-ops pipeline para evaluar las nuevas ofertas.

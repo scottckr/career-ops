@@ -134,6 +134,20 @@ function buildTitleFilter(titleFilter) {
   };
 }
 
+// ── Company filter ───────────────────────────────────────────────────
+
+function buildCompanyFilter(companyFilter) {
+  const blockedNames = (companyFilter?.blocked_names || []).map(k => k.toLowerCase());
+  const blockedKeywords = (companyFilter?.blocked_keywords || []).map(k => k.toLowerCase());
+
+  return (companyName) => {
+    const lower = companyName.toLowerCase();
+    if (blockedNames.some(n => lower === n)) return false;
+    if (blockedKeywords.some(k => lower.includes(k))) return false;
+    return true;
+  };
+}
+
 // ── Dedup ───────────────────────────────────────────────────────────
 
 function loadSeenUrls() {
@@ -264,10 +278,12 @@ async function main() {
   const config = parseYaml(readFileSync(PORTALS_PATH, 'utf-8'));
   const companies = config.tracked_companies || [];
   const titleFilter = buildTitleFilter(config.title_filter);
+  const companyFilter = buildCompanyFilter(config.company_filter);
 
   // 2. Filter to enabled companies with detectable APIs
   const targets = companies
     .filter(c => c.enabled !== false)
+    .filter(c => companyFilter(c.name))
     .filter(c => !filterCompany || c.name.toLowerCase().includes(filterCompany))
     .map(c => ({ ...c, _api: detectApi(c) }))
     .filter(c => c._api !== null);
@@ -298,6 +314,10 @@ async function main() {
 
       for (const job of jobs) {
         if (!titleFilter(job.title)) {
+          totalFiltered++;
+          continue;
+        }
+        if (!companyFilter(job.company)) {
           totalFiltered++;
           continue;
         }
