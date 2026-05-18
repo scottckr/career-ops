@@ -93,6 +93,15 @@ Los `search_queries` con `site:` filters cubren portales de forma transversal. �
    - **title_filter**: Al menos 1 keyword de `positive` debe aparecer en el título (case-insensitive); 0 de `negative`
    - **company_filter**: Descartar si el nombre de empresa coincide exactamente con `blocked_names` O contiene algún keyword de `blocked_keywords` (case-insensitive). Registrar como `skipped_blocked`.
 
+7b. **Filtrar por ubicación (opcional)** usando `location_filter` de `portals.yml`:
+   - Si el bloque `location_filter` está ausente, todas las ubicaciones pasan (comportamiento por defecto)
+   - Ubicación vacía en una oferta → pasa (no penalizar datos faltantes)
+   - Cualquier keyword de `block` presente → rechazar (precedencia sobre allow)
+   - `allow` vacío → pasa (ya superó block)
+   - `allow` no vacío → debe coincidir al menos una keyword
+   - Todas las coincidencias son case-insensitive substring
+   - La ubicación se persiste como 7ª columna en `scan-history.tsv` para auditoría posterior
+
 8. **Deduplicar** contra 3 fuentes:
    - `scan-history.tsv` → URL exacta ya vista
    - `applications.md` → empresa + rol normalizado ya evaluado
