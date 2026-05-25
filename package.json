@@ -1,6 +1,6 @@
 {
   "name": "career-ops",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "AI-powered job search pipeline built on Claude Code",
   "scripts": {
     "doctor": "node doctor.mjs",
@@ -18,13 +18,16 @@
     "token:audit": "node token-audit.mjs",
     "gemini:eval": "node gemini-eval.mjs",
     "dashboard": "./dashboard/career-dashboard --path .",
-    "dashboard:build": "cd dashboard && go build -o career-dashboard ."
+    "dashboard:build": "cd dashboard && go build -o career-dashboard .",
+    "patterns": "node analyze-patterns.mjs"
   },
   "keywords": [
     "ai",
     "job-search",
     "claude-code",
     "career",
+    "career-ops",
+    "careerops",
     "automation"
   ],
   "author": "Santiago Fernández de Valderrama <hi@santifer.io> (https://santifer.io)",
