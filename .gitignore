@@ -68,3 +68,5 @@ package-lock.json
 
 # Planning (local scratchpad)
 plan/
+
+interview-prep/*
